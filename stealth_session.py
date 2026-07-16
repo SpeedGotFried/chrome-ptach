@@ -1,9 +1,147 @@
 import asyncio
 from playwright.async_api import async_playwright
 
+# Stealth JS overrides script to run on every document initialization (before page JS runs)
+STEALTH_JS_SCRIPT = """
+(function() {
+  const originalToString = Function.prototype.toString;
+  const mocks = new Map();
+  
+  const mockFunction = (obj, prop, implementation) => {
+    try {
+      const original = obj[prop];
+      obj[prop] = implementation;
+      mocks.set(implementation, originalToString.call(original));
+    } catch (e) {}
+  };
+
+  // Mock hasFocus to always be true
+  mockFunction(document, 'hasFocus', () => true);
+  if (Document.prototype) {
+    mockFunction(Document.prototype, 'hasFocus', () => true);
+  }
+
+  // Helper to safely define a property getter
+  const defineProp = (obj, prop, val) => {
+    try {
+      Object.defineProperty(obj, prop, {
+        get: () => val,
+        set: () => {},
+        configurable: true,
+        enumerable: true
+      });
+    } catch (e) {}
+  };
+
+  // Mock document visibility properties
+  defineProp(document, 'hidden', false);
+  defineProp(document, 'visibilityState', 'visible');
+  defineProp(document, 'webkitHidden', false);
+  defineProp(document, 'webkitVisibilityState', 'visible');
+
+  if (Document.prototype) {
+    defineProp(Document.prototype, 'hidden', false);
+    defineProp(Document.prototype, 'visibilityState', 'visible');
+    defineProp(Document.prototype, 'webkitHidden', false);
+    defineProp(Document.prototype, 'webkitVisibilityState', 'visible');
+  }
+
+  // Intercept event listener registrations
+  const originalAddEventListener = EventTarget.prototype.addEventListener;
+  const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+  const wrappedListeners = new WeakMap();
+
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    if (typeof listener !== 'function') {
+      return originalAddEventListener.apply(this, arguments);
+    }
+
+    const isTargetWindowOrDoc = (
+      this === window || 
+      this === document || 
+      this instanceof Document || 
+      this instanceof Window
+    );
+
+    const shouldBlock = 
+      (type === 'visibilitychange') ||
+      (type === 'webkitvisibilitychange') ||
+      (isTargetWindowOrDoc && (type === 'blur' || type === 'focusout'));
+
+    if (shouldBlock) {
+      const wrappedListener = function(event) {
+        if (event.type === 'visibilitychange' || event.type === 'webkitvisibilitychange') {
+          return; // Suppress
+        }
+        if (event.type === 'blur' || event.type === 'focusout') {
+          if (event.target === window || event.target === document) {
+            return; // Suppress window/document blur
+          }
+        }
+        return listener.apply(this, arguments);
+      };
+
+      let targetMap = wrappedListeners.get(this);
+      if (!targetMap) {
+        targetMap = new Map();
+        wrappedListeners.set(this, targetMap);
+      }
+      targetMap.set(listener, wrappedListener);
+
+      return originalAddEventListener.call(this, type, wrappedListener, options);
+    }
+
+    return originalAddEventListener.apply(this, arguments);
+  };
+
+  EventTarget.prototype.removeEventListener = function(type, listener, options) {
+    const targetMap = wrappedListeners.get(this);
+    if (targetMap && targetMap.has(listener)) {
+      const wrappedListener = targetMap.get(listener);
+      targetMap.delete(listener);
+      return originalRemoveEventListener.call(this, type, wrappedListener, options);
+    }
+    return originalRemoveEventListener.apply(this, arguments);
+  };
+
+  // Block handler properties
+  const blockHandlerProperty = (obj, prop) => {
+    try {
+      Object.defineProperty(obj, prop, {
+        get: () => null,
+        set: () => {},
+        configurable: true,
+        enumerable: true
+      });
+    } catch (e) {}
+  };
+
+  blockHandlerProperty(window, 'onblur');
+  blockHandlerProperty(window, 'onfocusout');
+  blockHandlerProperty(document, 'onblur');
+  blockHandlerProperty(document, 'onfocusout');
+  blockHandlerProperty(document, 'onvisibilitychange');
+  blockHandlerProperty(document, 'onwebkitvisibilitychange');
+
+  if (Document.prototype) {
+    blockHandlerProperty(Document.prototype, 'onblur');
+    blockHandlerProperty(Document.prototype, 'onfocusout');
+    blockHandlerProperty(Document.prototype, 'onvisibilitychange');
+    blockHandlerProperty(Document.prototype, 'onwebkitvisibilitychange');
+  }
+
+  // Restore custom toString representation for our mocks
+  Function.prototype.toString = function() {
+    if (mocks.has(this)) {
+      return mocks.get(this);
+    }
+    return originalToString.apply(this, arguments);
+  };
+})();
+"""
+
 async def handle_page(page, client_session_map):
-    # Wait for the page to load or stabilize a bit
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.2)
     if page.is_closed():
         return
         
@@ -15,9 +153,20 @@ async def handle_page(page, client_session_map):
         # Apply native CDP overrides
         await client.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
         await client.send("Page.setVisibilityState", {"visibilityState": "visible"})
+        
+        # Set up a listener to re-apply emulation on navigation (since navigation resets it)
+        async def on_navigate(frame):
+            if frame == page.main_frame:
+                await asyncio.sleep(0.1)
+                try:
+                    await client.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+                    await client.send("Page.setVisibilityState", {"visibilityState": "visible"})
+                except Exception:
+                    pass
+
+        page.on("framenavigated", lambda frame: asyncio.create_task(on_navigate(frame)))
         print(f"[+] Spoofed focus & visibility on: {page.url}")
     except Exception as e:
-        # Ignore errors from pages that close immediately
         if "Target closed" not in str(e):
             print(f"[-] Error setting up CDP on page ({page.url}): {e}")
 
@@ -35,11 +184,15 @@ async def main():
         context = browser.contexts[0]
         client_session_map = {}
 
-        # Apply overrides to all currently open pages/tabs
+        # 1. Add context-level init script to automatically run stealth JS overrides on every page load/frame load
+        await context.add_init_script(STEALTH_JS_SCRIPT)
+        print("[+] Registered context-level stealth initialization script.")
+
+        # 2. Apply CDP overrides to all currently open pages/tabs
         for page in context.pages:
             await handle_page(page, client_session_map)
 
-        # Listen for any new pages/tabs opened by the user
+        # 3. Listen for any new pages/tabs opened by the user
         context.on("page", lambda new_page: asyncio.create_task(handle_page(new_page, client_session_map)))
 
         print("[+] Active. Monitoring all current and future tabs. Keep this script running...")
