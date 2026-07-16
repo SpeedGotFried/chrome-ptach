@@ -1,0 +1,38 @@
+diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink/renderer/core/dom/document.cc
+index 1111111..2222222 100644
+--- a/third_party/blink/renderer/core/dom/document.cc
++++ b/third_party/blink/renderer/core/dom/document.cc
+@@ -2110,6 +2110,3 @@
+ PageVisibilityState Document::GetVisibilityState() const {
+-  if (!GetPage())
+-    return PageVisibilityState::kHidden;
+-  return GetPage()->GetVisibilityState();
++  return PageVisibilityState::kVisible;
+ }
+@@ -6280,5 +6280,3 @@
+ bool Document::hasFocus() const {
+-  return GetPage() && GetPage()->GetFocusController().IsFocused() &&
+-         GetPage()->GetFocusController().IsActive();
++  return true;
+ }
+@@ -6540,6 +6540,12 @@
+ DispatchEventResult Document::DispatchEvent(Event& event) {
++  if (event.type() == event_type_names::kVisibilitychange || 
++      event.type() == event_type_names::kWebkitvisibilitychange ||
++      event.type() == event_type_names::kBlur || 
++      event.type() == event_type_names::kFocusout) {
++    return DispatchEventResult::kCanceledBeforeDispatch;
++  }
+   return ContainerNode::DispatchEvent(event);
+ }
+diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
+index 3333333..4444444 100644
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -950,5 +950,9 @@
+ DispatchEventResult LocalDOMWindow::DispatchEvent(Event& event) {
++  if (event.type() == event_type_names::kBlur || event.type() == event_type_names::kFocusout) {
++    return DispatchEventResult::kCanceledBeforeDispatch;
++  }
+   return DOMWindow::DispatchEvent(event);
+ }

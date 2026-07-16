@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Always Focused & Visible",
+  "version": "1.0",
+  "description": "Bypasses Page Visibility, window focus, and document blur checks so websites always see the page as focused and active.",
+  "permissions": [],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ]
+}
