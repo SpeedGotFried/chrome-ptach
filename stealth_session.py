@@ -17,7 +17,7 @@ STEALTH_JS_SCRIPT = """
 
   // Mock hasFocus to always be true
   mockFunction(document, 'hasFocus', () => true);
-  if (Document.prototype) {
+  if (window.Document && Document.prototype) {
     mockFunction(Document.prototype, 'hasFocus', () => true);
   }
 
@@ -39,7 +39,7 @@ STEALTH_JS_SCRIPT = """
   defineProp(document, 'webkitHidden', false);
   defineProp(document, 'webkitVisibilityState', 'visible');
 
-  if (Document.prototype) {
+  if (window.Document && Document.prototype) {
     defineProp(Document.prototype, 'hidden', false);
     defineProp(Document.prototype, 'visibilityState', 'visible');
     defineProp(Document.prototype, 'webkitHidden', false);
@@ -123,7 +123,7 @@ STEALTH_JS_SCRIPT = """
   blockHandlerProperty(document, 'onvisibilitychange');
   blockHandlerProperty(document, 'onwebkitvisibilitychange');
 
-  if (Document.prototype) {
+  if (window.Document && Document.prototype) {
     blockHandlerProperty(Document.prototype, 'onblur');
     blockHandlerProperty(Document.prototype, 'onfocusout');
     blockHandlerProperty(Document.prototype, 'onvisibilitychange');
@@ -150,11 +150,21 @@ async def handle_page(page, client_session_map):
         client = await page.context.new_cdp_session(page)
         client_session_map[page] = client
         
-        # Apply native CDP overrides
+        # 1. Native CDP command to evaluate script on every new document (navigation) in this tab
+        await client.send("Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS_SCRIPT})
+        
+        # 2. Run overrides immediately in case the page is already loaded
+        await client.send("Runtime.evaluate", {
+            "expression": STEALTH_JS_SCRIPT,
+            "userGesture": True,
+            "awaitPromise": False
+        })
+        
+        # 3. Apply native CDP overrides
         await client.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
         await client.send("Page.setVisibilityState", {"visibilityState": "visible"})
         
-        # Set up a listener to re-apply emulation on navigation (since navigation resets it)
+        # 4. Set up a listener to re-apply emulation on navigation (since navigation resets it)
         async def on_navigate(frame):
             if frame == page.main_frame:
                 await asyncio.sleep(0.1)
@@ -184,15 +194,11 @@ async def main():
         context = browser.contexts[0]
         client_session_map = {}
 
-        # 1. Add context-level init script to automatically run stealth JS overrides on every page load/frame load
-        await context.add_init_script(STEALTH_JS_SCRIPT)
-        print("[+] Registered context-level stealth initialization script.")
-
-        # 2. Apply CDP overrides to all currently open pages/tabs
+        # Apply overrides to all currently open pages/tabs
         for page in context.pages:
             await handle_page(page, client_session_map)
 
-        # 3. Listen for any new pages/tabs opened by the user
+        # Listen for any new pages/tabs opened by the user
         context.on("page", lambda new_page: asyncio.create_task(handle_page(new_page, client_session_map)))
 
         print("[+] Active. Monitoring all current and future tabs. Keep this script running...")
