@@ -181,13 +181,28 @@ async def handle_page(page, client_session_map):
             print(f"[-] Error setting up CDP on page ({page.url}): {e}")
 
 async def main():
-    async with async_playwright() as p:
-        print("[*] Connecting to Chrome at http://localhost:9222...")
+    import os
+    import tempfile
+    
+    port = 9222
+    temp_file_path = os.path.join(tempfile.gettempdir(), "chrome_stealth_port.txt")
+    if os.path.exists(temp_file_path):
         try:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            with open(temp_file_path, "r") as f:
+                port = int(f.read().strip())
+                print(f"[+] Found dynamically generated port in temp file: {port}")
+        except Exception as e:
+            print(f"[-] Could not read port from temp file, defaulting to 9222. Error: {e}")
+    else:
+        print("[*] Temp port file not found. Defaulting to standard port 9222...")
+
+    async with async_playwright() as p:
+        print(f"[*] Connecting to Chrome at http://localhost:{port}...")
+        try:
+            browser = await p.chromium.connect_over_cdp(f"http://localhost:{port}")
         except Exception as e:
             print(f"\n[-] Failed to connect to Chrome: {e}")
-            print("[!] Make sure Google Chrome is running in debugging mode on port 9222.")
+            print(f"[!] Make sure Google Chrome is running in debugging mode on port {port}.")
             print("[!] Run launch_chrome.bat first.")
             return
 

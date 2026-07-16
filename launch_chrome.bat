@@ -4,8 +4,12 @@ echo ==============================================
 echo   Launching Chrome in Remote Debugging Mode   
 echo ==============================================
 
-set "PORT=9222"
+:: Generate a random port between 50000 and 65000
+set /a PORT=%RANDOM% * 15000 / 32768 + 50000
 set "USER_DIR=%TEMP%\chrome-debug-profile"
+
+:: Write the port to a temporary file for stealth_session to read
+echo %PORT% > "%TEMP%\chrome_stealth_port.txt"
 
 :: Locate chrome.exe across standard installation paths
 if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
@@ -22,7 +26,7 @@ if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
 )
 
 echo [+] Launching Chrome...
-echo [+] Port: %PORT%
+echo [+] Dynamic Port: %PORT%
 echo [+] Profile Directory: %USER_DIR%
 echo ==============================================
 
