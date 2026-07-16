@@ -29,7 +29,7 @@ jobs:
 
     - name: Build Windows Executable
       run: |
-        pyinstaller --onefile stealth_session.py
+        pyinstaller --onefile --noconsole stealth_session.py
 
     - name: Create Release and Upload Executable
       uses: softprops/action-gh-release@v1
