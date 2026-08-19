@@ -36,7 +36,21 @@
     console.warn('[Always Focused & Visible] Failed to override hasFocus:', e);
   }
 
-  // 3. Intercept event listener registrations
+  // 3. Helper to detect key events used for taking screenshots or launching tools
+  const isSurveillanceKeyEvent = (e) => {
+    const key = e.key;
+    // Block PrintScreen, Win key, Function keys F1-F12, and ContextMenu key
+    if (key === 'PrintScreen' || key === 'OS' || key === 'Meta' || (key && key.startsWith('F')) || key === 'ContextMenu') {
+      return true;
+    }
+    // Block standard DevTools key combinations (Ctrl+Shift+I, J, C, K) and View Source (Ctrl+U)
+    if (e.ctrlKey && (e.shiftKey && ['I', 'J', 'C', 'K', 'i', 'j', 'c', 'k'].includes(e.key) || ['U', 'u'].includes(e.key))) {
+      return true;
+    }
+    return false;
+  };
+
+  // 4. Intercept event listener registrations
   const originalAddEventListener = EventTarget.prototype.addEventListener;
   const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
 
@@ -54,10 +68,16 @@
       this instanceof Window
     );
 
+    const isMouseEvent = (type === 'mousemove' || type === 'mouseleave' || type === 'mouseout' || type === 'mouseenter');
+    const isKeyboardEvent = (type === 'keydown' || type === 'keyup' || type === 'keypress');
+
     const shouldBlock = 
       (type === 'visibilitychange') ||
       (type === 'webkitvisibilitychange') ||
-      (isTargetWindowOrDoc && (type === 'blur' || type === 'focusout'));
+      (isTargetWindowOrDoc && (type === 'blur' || type === 'focusout')) ||
+      (isTargetWindowOrDoc && isMouseEvent) ||
+      (isTargetWindowOrDoc && isKeyboardEvent) ||
+      (type === 'contextmenu');
 
     if (shouldBlock) {
       const wrappedListener = function(event) {
@@ -70,6 +90,22 @@
           if (event.target === window || event.target === document) {
             return;
           }
+        }
+        if (isMouseEvent) {
+          // Block mouse tracking/leave events at window/document level completely
+          return;
+        }
+        if (isKeyboardEvent) {
+          // Only block screenshot or inspection keyboard triggers
+          if (isSurveillanceKeyEvent(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+        }
+        if (event.type === 'contextmenu') {
+          // Block website attempts to disable right-click menu
+          return;
         }
         return listener.apply(this, arguments);
       };
@@ -98,7 +134,7 @@
     return originalRemoveEventListener.apply(this, arguments);
   };
 
-  // 4. Disable onblur / onvisibilitychange properties
+  // 5. Disable onblur / onvisibilitychange / onmousemove / oncontextmenu properties
   const blockHandlerProperty = (obj, prop) => {
     try {
       Object.defineProperty(obj, prop, {
@@ -114,14 +150,47 @@
 
   blockHandlerProperty(window, 'onblur');
   blockHandlerProperty(window, 'onfocusout');
+  blockHandlerProperty(window, 'onmouseleave');
+  blockHandlerProperty(window, 'onmouseout');
+  blockHandlerProperty(window, 'oncontextmenu');
   blockHandlerProperty(document, 'onblur');
   blockHandlerProperty(document, 'onfocusout');
   blockHandlerProperty(document, 'onvisibilitychange');
   blockHandlerProperty(document, 'onwebkitvisibilitychange');
+  blockHandlerProperty(document, 'onmousemove');
+  blockHandlerProperty(document, 'onmouseleave');
+  blockHandlerProperty(document, 'onmouseout');
+  blockHandlerProperty(document, 'oncontextmenu');
   blockHandlerProperty(Document.prototype, 'onblur');
   blockHandlerProperty(Document.prototype, 'onfocusout');
   blockHandlerProperty(Document.prototype, 'onvisibilitychange');
   blockHandlerProperty(Document.prototype, 'onwebkitvisibilitychange');
+  blockHandlerProperty(Document.prototype, 'oncontextmenu');
+
+  // 6. Force User Select CSS rules to override copy/paste & text selection blocks
+  const forceTextSelection = () => {
+    const style = document.createElement('style');
+    style.id = '__always_selectable_css__';
+    style.textContent = `
+      * {
+        -webkit-user-select: text !important;
+        -moz-user-select: text !important;
+        -ms-user-select: text !important;
+        user-select: text !important;
+      }
+    `;
+    if (document.head) {
+      document.head.appendChild(style);
+    } else {
+      document.documentElement.appendChild(style);
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', forceTextSelection);
+  } else {
+    forceTextSelection();
+  }
 
   console.log('[Always Focused & Visible] Bypass script successfully active.');
 })();
